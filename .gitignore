@@ -2,3 +2,4 @@
 *.exe
 # Database files
 *.ibd
+build/

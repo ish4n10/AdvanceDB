@@ -1,4 +1,6 @@
 #include <cstdint>
+#include "common/constants.hpp"
+
 enum class PageType : uint16_t {
     HEADER = 0,
     META = 1,
@@ -30,5 +32,16 @@ struct PageHeader {
     uint32_t lsn; 
 };
 #pragma pack(pop)
+
+struct Page {
+    uint8_t data[PAGE_SIZE];
+};
+
+
+inline PageHeader* get_header(Page& page) {
+    return reinterpret_cast<PageHeader*>(&page);
+}
+
+void init_page(Page& page, uint32_t page_id, PageType page_type, PageLevel page_level);
 
 static_assert(sizeof(PageHeader) ==  32, "PageHeader size must be 32 bytes");
