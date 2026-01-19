@@ -51,7 +51,7 @@ void DiskManager::write_page(int page_id, const void* page_data) {
 }
 
 void DiskManager::flush() {
-
+    // https://stackoverflow.com/a/68324129
     // TODO: Use fsync on Unixbased systems
     if (_commit(file_descriptor) < 0) {
         throw std::runtime_error("Failed to flush data to disk");
