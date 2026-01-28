@@ -3,8 +3,6 @@
 #include <cstring>
 #include <algorithm>
 
-
-
 // helpers 
 bool can_insert(Page& page, uint16_t record_size) {
     PageHeader* page_header = get_header(page);
@@ -76,14 +74,11 @@ bool page_insert(Page& page, const uint8_t* key, uint16_t key_size, const uint8_
     if (result.found) {
         return false;
     }
-
-    
+      
     uint16_t rsize = record_size(key_size, value_size);
     if (!can_insert(page, rsize)) {
         return false;
     }
-
-
     uint16_t roffset = write_record(page, key, key_size, value, value_size);
 
     insert_slot(page, result.index, roffset);

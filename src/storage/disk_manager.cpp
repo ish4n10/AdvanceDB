@@ -37,7 +37,7 @@ DiskManager::~DiskManager() {
     }
 }
 
-void DiskManager::read_page(int page_id, char* page_data) {
+void DiskManager::read_page(int page_id, uint8_t* page_data) {
     long offset = static_cast<long>(page_id * PAGE_SIZE);
     if (lseek(file_descriptor, offset, SEEK_SET) < 0) {
         throw std::runtime_error("Failed to seek to the correct position for reading");
