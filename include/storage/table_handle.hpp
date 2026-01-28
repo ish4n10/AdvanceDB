@@ -2,7 +2,6 @@
 #include "storage/disk_manager.hpp"
 #include <cstdint>
 
-
 struct TableHandle {
     std::string table_name;
     std::string file_path;

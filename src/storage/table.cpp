@@ -4,6 +4,8 @@
 #include <stdexcept>
 #include <direct.h> // _mkdir
 #include <cerrno>
+#include <assert.h>
+
 
 bool open_table(const std::string &name, TableHandle &th) {
     th.table_name = name;
@@ -19,7 +21,7 @@ bool open_table(const std::string &name, TableHandle &th) {
         th.dm = DiskManager(th.file_path);
 
         Page meta;
-        th.dm.read_page(0, reinterpret_cast<char *>(meta.data));
+        th.dm.read_page(0, meta.data);
 
         PageHeader *ph = get_header(meta);
         th.root_page = ph->root_page;
@@ -74,9 +76,10 @@ bool create_table(const std::string &name) {
     }
 }
 
+// this one reserves a page id 
 uint32_t allocate_page(TableHandle &th) {
     Page bitmap;
-    th.dm.read_page(1, reinterpret_cast<char *>(bitmap.data));
+    th.dm.read_page(1, bitmap.data);
 
     uint8_t *bm = bitmap.data + sizeof(PageHeader);
     uint32_t bitmap_size = PAGE_SIZE - sizeof(PageHeader);
@@ -111,7 +114,7 @@ uint32_t allocate_page(TableHandle &th) {
 
 void free_page(TableHandle &th, uint32_t page_id) {
     Page bitmap;
-    th.dm.read_page(1, reinterpret_cast<char *>(bitmap.data));
+    th.dm.read_page(1, bitmap.data);
 
     uint8_t *bm = bitmap.data + sizeof(PageHeader);
 
@@ -121,4 +124,7 @@ void free_page(TableHandle &th, uint32_t page_id) {
     bm[byte_idx] &= ~(1 << bit_idx);
     th.dm.write_page(1, reinterpret_cast<const void *>(bitmap.data));
     th.dm.flush();
+    return;
 }
+
+

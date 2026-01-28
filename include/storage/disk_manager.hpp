@@ -11,7 +11,7 @@ public:
     DiskManager(const DiskManager&) = delete;
     DiskManager& operator=(const DiskManager&) = delete;
 
-    void read_page(int page_id, char* page_data);
+    void read_page(int page_id, uint8_t* page_data);
     void write_page(int page_id, const void* page_data); // void as pointer can be anything for now
     void flush();
 
