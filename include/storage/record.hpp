@@ -27,3 +27,4 @@ int compare_keys(const uint8_t* first, uint16_t first_size, const uint8_t* secon
 BSearchResult search_record(Page& page, const uint8_t* key, uint16_t key_len);
 bool can_insert(Page& page, uint16_t record_size);
 bool page_insert(Page& page, const uint8_t* key, uint16_t key_size, const uint8_t* value, uint16_t value_size);
+bool page_delete(Page& page, const uint8_t* key, uint16_t key_len);

@@ -32,7 +32,10 @@ struct PageHeader {
     uint16_t free_end;
 
     uint32_t parent_page_id;
-    uint32_t lsn; 
+    uint32_t lsn;
+
+    uint32_t prev_page_id;
+    uint32_t next_page_id;
 };
 #pragma pack(pop)
 
@@ -42,7 +45,7 @@ struct Page {
 };
 
 
-static_assert(sizeof(PageHeader) ==  32, "PageHeader size must be 32 bytes");
+static_assert(sizeof(PageHeader) == 40, "PageHeader size must be 40 bytes");
 // get header of a page 
 inline PageHeader* get_header(Page& page);
 
