@@ -3,6 +3,7 @@
 #include "storage/page.hpp"
 #include "storage/btree.hpp"
 #include "storage/table_handle.hpp"
+#include "storage/buffer_pool.hpp"
 #include "storage/record.hpp"
 #include <cstring>
 
@@ -173,12 +174,15 @@ SplitInternalResult split_internal_page(TableHandle& th, Page& page) {
 
         uint16_t new_off = write_raw_record(new_page, buf, size);
         insert_slot(new_page, get_header(new_page)->cell_count, new_off);
-        
+
         uint32_t child_page_id = ieentry->child_page;
-        Page child_page;
-        th.dm.read_page(child_page_id, child_page.data);
-        get_header(child_page)->parent_page_id = new_pid;
-        th.dm.write_page(child_page_id, child_page.data);
+        if (th.bpm) {
+            Page* child_page = th.bpm->fetch_page(child_page_id);
+            if (child_page) {
+                get_header(*child_page)->parent_page_id = new_pid;
+                th.bpm->unpin_page(child_page_id, true);
+            }
+        }
     }
     
     if (new_leftmost_child != 0) {
@@ -198,88 +202,102 @@ SplitInternalResult split_internal_page(TableHandle& th, Page& page) {
     auto* new_ph = get_header(new_page);
     new_ph->parent_page_id = ph->parent_page_id;
 
-    th.dm.write_page(new_pid, new_page.data);
-    th.dm.write_page(ph->page_id, page.data);
+    if (th.bpm) {
+        Page* new_bp = th.bpm->new_page(new_pid, PageType::INDEX, PageLevel::INTERNAL);
+        if (new_bp) {
+            memcpy(new_bp->data, new_page.data, PAGE_SIZE);
+            th.bpm->unpin_page(new_pid, true);
+        }
+    }
 
     return { new_pid, sep, page, new_page };
 }
 
 void create_new_root(TableHandle& th, uint32_t left, const Key& key, uint32_t right) {
+    if (!th.bpm) {
+        return;
+    }
     uint32_t new_root_id = allocate_page(th);
-    Page root;
-    init_page(root, new_root_id, PageType::INDEX, PageLevel::INTERNAL);
-
-    auto* root_ph = get_header(root);
-    *reinterpret_cast<uint32_t*>(root_ph->reserved) = left;
-    root_ph->root_page = left;
-    
-    uint32_t offset = write_internal_entry(root, key, right);
-    insert_slot(root, 0, offset);
-
-    th.root_page = new_root_id;
-
-    Page meta;
-    th.dm.read_page(0, meta.data);
-    get_header(meta)->root_page = new_root_id;
-    th.dm.write_page(0, meta.data);
-
-    th.dm.write_page(new_root_id, root.data);
-
-    Page left_page;
-    th.dm.read_page(left, left_page.data);
-    auto* left_ph = get_header(left_page);
-    left_ph->parent_page_id = new_root_id;
-    th.dm.write_page(left, left_page.data);
-
-    Page right_page;
-    th.dm.read_page(right, right_page.data);
-    auto* right_ph = get_header(right_page);
-    right_ph->parent_page_id = new_root_id;
-    th.dm.write_page(right, right_page.data);
-}
-
-void insert_into_parent(TableHandle& th, uint32_t left, const Key& key, uint32_t right) {
-    Page left_page;
-    th.dm.read_page(left, left_page.data);
-    auto* lh = get_header(left_page);
-
-    if (lh->parent_page_id == 0) {
-        create_new_root(th, left, key, right);
+    Page* root = th.bpm->new_page(new_root_id, PageType::INDEX, PageLevel::INTERNAL);
+    if (!root) {
         return;
     }
 
+    auto* root_ph = get_header(*root);
+    *reinterpret_cast<uint32_t*>(root_ph->reserved) = left;
+    root_ph->root_page = left;
+
+    uint32_t offset = write_internal_entry(*root, key, right);
+    insert_slot(*root, 0, offset);
+
+    th.root_page = new_root_id;
+
+    Page* meta = th.bpm->fetch_page(0);
+    if (meta) {
+        get_header(*meta)->root_page = new_root_id;
+        th.bpm->unpin_page(0, true);
+    }
+
+    th.bpm->unpin_page(new_root_id, true);
+
+    Page* left_page = th.bpm->fetch_page(left);
+    if (left_page) {
+        get_header(*left_page)->parent_page_id = new_root_id;
+        th.bpm->unpin_page(left, true);
+    }
+
+    Page* right_page = th.bpm->fetch_page(right);
+    if (right_page) {
+        get_header(*right_page)->parent_page_id = new_root_id;
+        th.bpm->unpin_page(right, true);
+    }
+}
+
+void insert_into_parent(TableHandle& th, uint32_t left, const Key& key, uint32_t right) {
+    if (!th.bpm) {
+        return;
+    }
+    Page* left_page = th.bpm->fetch_page(left);
+    if (!left_page) {
+        return;
+    }
+    auto* lh = get_header(*left_page);
     uint32_t parent_pid = lh->parent_page_id;
-    
+    th.bpm->unpin_page(left, false);
+
     if (parent_pid == 0 || parent_pid == INVALID_PAGE_ID) {
         create_new_root(th, left, key, right);
         return;
     }
 
-    Page parent;
-    th.dm.read_page(parent_pid, parent.data);
-    
-    auto* ph = get_header(parent);
+    Page* parent = th.bpm->fetch_page(parent_pid);
+    if (!parent) {
+        return;
+    }
+    auto* ph = get_header(*parent);
     if (ph->page_level != PageLevel::INTERNAL) {
+        th.bpm->unpin_page(parent_pid, false);
         create_new_root(th, left, key, right);
         return;
     }
 
-    BSearchResult sr = internal_search_record(parent, key.data(), key.size());
+    BSearchResult sr = internal_search_record(*parent, key.data(), key.size());
     if (sr.found) {
+        th.bpm->unpin_page(parent_pid, false);
         create_new_root(th, left, key, right);
         return;
     }
-    
+
     if (sr.index == 0) {
         *reinterpret_cast<uint32_t*>(ph->reserved) = left;
     }
 
-    if (insert_internal_no_split(parent, key, right)) {
-        th.dm.write_page(parent_pid, parent.data);
+    if (insert_internal_no_split(*parent, key, right)) {
+        th.bpm->unpin_page(parent_pid, true);
         return;
     }
 
-    auto split = split_internal_page(th, parent);
-    th.dm.write_page(parent_pid, parent.data);
+    auto split = split_internal_page(th, *parent);
+    th.bpm->unpin_page(parent_pid, true);
     insert_into_parent(th, parent_pid, split.seperator_key, split.new_page);
 }

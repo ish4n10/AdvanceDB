@@ -9,9 +9,9 @@
 #include <functional>
 #include "storage/btree.hpp"
 #include "storage/table_handle.hpp"
+#include "storage/buffer_pool.hpp"
 #include "storage/page.hpp"
 #include "storage/record.hpp"
-#include "storage/disk_manager.hpp"
 #include "common/constants.hpp"
 
 // Forward declarations for table functions
@@ -430,19 +430,23 @@ void test_btree_delete() {
     std::cout << "[OK] Deleted all remaining keys\n";
 
     // Test 6: Verify tree is empty (or root is empty)
-    // After deleting all keys, root might be empty or tree might be empty
-    Page meta;
-    th.dm.read_page(0, meta.data);
-    PageHeader* meta_ph = get_header(meta);
-    
-    if (meta_ph->root_page != 0) {
-        Page root;
-        th.dm.read_page(meta_ph->root_page, root.data);
-        PageHeader* root_ph = get_header(root);
-        // Root might be empty or have 0 cells
-        std::cout << "[OK] Tree structure is valid after all deletions\n";
-    } else {
-        std::cout << "[OK] Tree is empty after all deletions\n";
+    if (th.bpm) {
+        Page* meta = th.bpm->fetch_page(0);
+        if (meta) {
+            PageHeader* meta_ph = get_header(*meta);
+            if (meta_ph->root_page != 0) {
+                Page* root = th.bpm->fetch_page(meta_ph->root_page);
+                if (root) {
+                    PageHeader* root_ph = get_header(*root);
+                    (void)root_ph;
+                    th.bpm->unpin_page(meta_ph->root_page, false);
+                }
+                std::cout << "[OK] Tree structure is valid after all deletions\n";
+            } else {
+                std::cout << "[OK] Tree is empty after all deletions\n";
+            }
+            th.bpm->unpin_page(0, false);
+        }
     }
 
     // Test 7: Delete from empty tree (should fail)
@@ -770,6 +774,7 @@ void test_btree_large_value_split() {
 
     // Open table
     TableHandle th(table);
+    assert(open_table(table, th) && "open_table failed");
     std::cout << "[OK] Opened table, root_page: " << th.root_page << "\n";
 
     const uint16_t large_value_size = 1800;
@@ -867,53 +872,58 @@ void test_btree_large_value_split() {
     std::cout << "[OK] All small values still accessible and correct after split\n";
     
     // Verify the tree structure by checking root page
-    Page meta_page;
-    th.dm.read_page(0, meta_page.data);
-    PageHeader* meta_ph = get_header(meta_page);
-    
-    Page root_page;
-    th.dm.read_page(meta_ph->root_page, root_page.data);
-    PageHeader* root_ph = get_header(root_page);
-    
-    // After split, if we have an internal node, it means the root split
-    // If we still have a leaf, the split happened but root didn't split yet
-    if (root_ph->page_level == PageLevel::INTERNAL) {
-        std::cout << "[OK] Root is now an internal node (tree has multiple levels)\n";
-    } else {
-        std::cout << "[OK] Root is still a leaf node (split occurred but root didn't split)\n";
+    if (th.bpm) {
+        Page* meta_page = th.bpm->fetch_page(0);
+        if (meta_page) {
+            PageHeader* meta_ph = get_header(*meta_page);
+            Page* root_page = th.bpm->fetch_page(meta_ph->root_page);
+            if (root_page) {
+                PageHeader* root_ph = get_header(*root_page);
+                if (root_ph->page_level == PageLevel::INTERNAL) {
+                    std::cout << "[OK] Root is now an internal node (tree has multiple levels)\n";
+                } else {
+                    std::cout << "[OK] Root is still a leaf node (split occurred but root didn't split)\n";
+                }
+                th.bpm->unpin_page(meta_ph->root_page, false);
+            }
+            th.bpm->unpin_page(0, false);
+        }
     }
     
     std::cout << "\n=== Large Value Split Test PASSED ===\n";
 }
 
 static int count_leaf_pages(TableHandle& th, uint32_t page_id) {
-    if (page_id == 0) return 0;
-    
-    Page page;
-    th.dm.read_page(page_id, page.data);
-    PageHeader* ph = get_header(page);
-    
+    if (page_id == 0 || !th.bpm) return 0;
+
+    Page* page = th.bpm->fetch_page(page_id);
+    if (!page) return 0;
+    PageHeader* ph = get_header(*page);
+
     if (ph->page_level == PageLevel::LEAF) {
+        th.bpm->unpin_page(page_id, false);
         return 1;
     }
-    
+
     if (ph->page_level == PageLevel::INTERNAL) {
         int count = 0;
         uint32_t* leftmost_ptr = reinterpret_cast<uint32_t*>(ph->reserved);
         if (*leftmost_ptr != 0) {
             count += count_leaf_pages(th, *leftmost_ptr);
         }
-        
+
         for (uint16_t i = 0; i < ph->cell_count; i++) {
-            uint16_t* slot = slot_ptr(page, i);
+            uint16_t* slot = slot_ptr(*page, i);
             if (slot == nullptr) continue;
             uint16_t offset = *slot;
-            InternalEntry* entry = reinterpret_cast<InternalEntry*>(page.data + offset);
+            InternalEntry* entry = reinterpret_cast<InternalEntry*>(page->data + offset);
             count += count_leaf_pages(th, entry->child_page);
         }
+        th.bpm->unpin_page(page_id, false);
         return count;
     }
-    
+
+    th.bpm->unpin_page(page_id, false);
     return 0;
 }
 

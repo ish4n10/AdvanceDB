@@ -1,6 +1,7 @@
 #include <cstdint>
 #include "storage/page.hpp"
 #include "storage/table_handle.hpp"
+#include "storage/buffer_pool.hpp"
 #include "storage/record.hpp"
 #include "storage/btree.hpp"
 #include "common/constants.hpp"
@@ -60,7 +61,15 @@ void btree_range_scan(TableHandle& th, const Key& start_key, const Key& end_key,
         if (page_id == 0) {
             return;
         }
-        th.dm.read_page(page_id, page.data);
+        if (!th.bpm) {
+            return;
+        }
+        Page* next = th.bpm->fetch_page(page_id);
+        if (!next) {
+            return;
+        }
+        std::memcpy(page.data, next->data, PAGE_SIZE);
+        th.bpm->unpin_page(page_id, false);
         ph = get_header(page);
         start_index = 0;
     }
@@ -93,36 +102,50 @@ bool btree_search(TableHandle& th, const Key& key, Value& value) {
 }
 
 bool btree_insert(TableHandle& th, const Key& key, const Value& value) {
+    if (!th.bpm) {
+        return false;
+    }
     if (th.root_page == 0) {
         uint32_t root_page_id = allocate_page(th);
-        Page root;
-        init_page(root, root_page_id, PageType::DATA, PageLevel::LEAF);
+        if (root_page_id == INVALID_PAGE_ID) {
+            return false;
+        }
+        Page* root = th.bpm->new_page(root_page_id, PageType::DATA, PageLevel::LEAF);
+        if (!root) {
+            return false;
+        }
         th.root_page = root_page_id;
-        
-        Page meta;
-        th.dm.read_page(0, meta.data);
-        get_header(meta)->root_page = root_page_id;
-        th.dm.write_page(0, meta.data);
-        
-        page_insert(root, key.data(), key.size(), value.data(), value.size());
-        th.dm.write_page(root_page_id, root.data);
+
+        Page* meta = th.bpm->fetch_page(0);
+        if (meta) {
+            get_header(*meta)->root_page = root_page_id;
+            th.bpm->unpin_page(0, true);
+        }
+
+        page_insert(*root, key.data(), key.size(), value.data(), value.size());
+        th.bpm->unpin_page(root_page_id, true);
         return true;
     }
-    
+
     Page leaf_page;
     uint32_t leaf_page_id = find_leaf_page(th, key, leaf_page);
-    
+
     BSearchResult search_result = search_record(leaf_page, key.data(), key.size());
     if (search_result.found) {
         return false;
     }
-    
+
     if (btree_insert_leaf_no_split(th, leaf_page_id, leaf_page, key, value)) {
         return true;
     }
-    
-    th.dm.read_page(leaf_page_id, leaf_page.data);
-    
+
+    Page* leaf_bp = th.bpm->fetch_page(leaf_page_id);
+    if (!leaf_bp) {
+        return false;
+    }
+    std::memcpy(leaf_page.data, leaf_bp->data, PAGE_SIZE);
+    th.bpm->unpin_page(leaf_page_id, false);
+
     SplitLeafResult split_result = split_leaf_page(th, leaf_page);
     
     Key sep_key;
@@ -139,7 +162,11 @@ bool btree_insert(TableHandle& th, const Key& key, const Value& value) {
             assert(false && "page_insert failed for left page");
             return false;
         }
-        th.dm.write_page(leaf_page_id, split_result.left_page.data);
+        Page* left_bp = th.bpm->fetch_page(leaf_page_id);
+        if (left_bp) {
+            std::memcpy(left_bp->data, split_result.left_page.data, PAGE_SIZE);
+            th.bpm->unpin_page(leaf_page_id, true);
+        }
     } else {
         if (!can_insert(split_result.right_page, record_size(key.size(), value.size()))) {
             assert(false && "Right page doesn't have space after split");
@@ -149,7 +176,11 @@ bool btree_insert(TableHandle& th, const Key& key, const Value& value) {
             assert(false && "page_insert failed for right page");
             return false;
         }
-        th.dm.write_page(split_result.new_page, split_result.right_page.data);
+        Page* right_bp = th.bpm->fetch_page(split_result.new_page);
+        if (right_bp) {
+            std::memcpy(right_bp->data, split_result.right_page.data, PAGE_SIZE);
+            th.bpm->unpin_page(split_result.new_page, true);
+        }
     }
     
     insert_into_parent(th, leaf_page_id, sep_key, split_result.new_page);
@@ -168,17 +199,22 @@ struct SiblingInfo {
 
 SiblingInfo find_leaf_siblings(TableHandle& th, uint32_t leaf_page_id, Page& leaf_page) {
     SiblingInfo info = {0, 0, Key(), Key(), false, false};
-    
+
     PageHeader* ph = get_header(leaf_page);
     if (ph->parent_page_id == 0) {
         info.is_leftmost = true;
         info.is_rightmost = true;
         return info;
     }
-    
-    Page parent;
-    th.dm.read_page(ph->parent_page_id, parent.data);
-    PageHeader* parent_ph = get_header(parent);
+
+    if (!th.bpm) {
+        return info;
+    }
+    Page* parent = th.bpm->fetch_page(ph->parent_page_id);
+    if (!parent) {
+        return info;
+    }
+    PageHeader* parent_ph = get_header(*parent);
     
     if (parent_ph->page_level != PageLevel::INTERNAL) {
         return info;
@@ -188,8 +224,8 @@ SiblingInfo find_leaf_siblings(TableHandle& th, uint32_t leaf_page_id, Page& lea
     if (leftmost == leaf_page_id) {
         info.is_leftmost = true;
         if (parent_ph->cell_count > 0) {
-            uint16_t entry_offset = *slot_ptr(parent, 0);
-            InternalEntry* entry = reinterpret_cast<InternalEntry*>(parent.data + entry_offset);
+            uint16_t entry_offset = *slot_ptr(*parent, 0);
+            InternalEntry* entry = reinterpret_cast<InternalEntry*>(parent->data + entry_offset);
             info.right_sibling = entry->child_page;
             
             uint16_t sep_len = entry->key_size;
@@ -200,25 +236,26 @@ SiblingInfo find_leaf_siblings(TableHandle& th, uint32_t leaf_page_id, Page& lea
             // For leftmost page, entry[0]'s key IS the right separator
             info.right_separator_key.assign(entry->key, sep_len);
         }
+        th.bpm->unpin_page(ph->parent_page_id, false);
         return info;
     }
-    
+
     for (uint16_t i = 0; i < parent_ph->cell_count; i++) {
-        uint16_t entry_offset = *slot_ptr(parent, i);
-        InternalEntry* entry = reinterpret_cast<InternalEntry*>(parent.data + entry_offset);
-        
+        uint16_t entry_offset = *slot_ptr(*parent, i);
+        InternalEntry* entry = reinterpret_cast<InternalEntry*>(parent->data + entry_offset);
+
         if (entry->child_page == leaf_page_id) {
             if (i == 0) {
                 info.left_sibling = leftmost;
             } else {
-                uint16_t prev_offset = *slot_ptr(parent, i - 1);
-                InternalEntry* prev_entry = reinterpret_cast<InternalEntry*>(parent.data + prev_offset);
+                uint16_t prev_offset = *slot_ptr(*parent, i - 1);
+                InternalEntry* prev_entry = reinterpret_cast<InternalEntry*>(parent->data + prev_offset);
                 info.left_sibling = prev_entry->child_page;
             }
             
             if (i + 1 < parent_ph->cell_count) {
-                uint16_t next_offset = *slot_ptr(parent, i + 1);
-                InternalEntry* next_entry = reinterpret_cast<InternalEntry*>(parent.data + next_offset);
+                uint16_t next_offset = *slot_ptr(*parent, i + 1);
+                InternalEntry* next_entry = reinterpret_cast<InternalEntry*>(parent->data + next_offset);
                 info.right_sibling = next_entry->child_page;
                 // Right separator is the key of entry[i+1]
                 info.right_separator_key.assign(next_entry->key, next_entry->key_size);
@@ -233,11 +270,13 @@ SiblingInfo find_leaf_siblings(TableHandle& th, uint32_t leaf_page_id, Page& lea
                 return info;
             }
             info.separator_key.assign(entry->key, sep_len);
-            
+
+            th.bpm->unpin_page(ph->parent_page_id, false);
             return info;
         }
     }
-    
+
+    th.bpm->unpin_page(ph->parent_page_id, false);
     assert(false && "Leaf page not found in parent");
     return info;
 }
@@ -256,33 +295,41 @@ static int16_t find_internal_entry_index(Page& parent, const Key& key_to_remove)
     return -1;
 }
 
-void remove_from_internal(TableHandle& th, uint32_t parent_id, const Key& key_to_remove, uint32_t deleted_child_page = 0) {
-    Page parent;
-    th.dm.read_page(parent_id, parent.data);
-    PageHeader* ph = get_header(parent);
-    
-    if (ph->page_level != PageLevel::INTERNAL) {
+void remove_from_internal(TableHandle& th, uint32_t parent_id, const Key& key_to_remove, uint32_t deleted_child_page) {
+    if (!th.bpm) {
         return;
     }
-    
+    Page* parent = th.bpm->fetch_page(parent_id);
+    if (!parent) {
+        return;
+    }
+    PageHeader* ph = get_header(*parent);
+
+    if (ph->page_level != PageLevel::INTERNAL) {
+        th.bpm->unpin_page(parent_id, false);
+        return;
+    }
+
     uint32_t* leftmost_ptr = reinterpret_cast<uint32_t*>(ph->reserved);
     if (deleted_child_page != 0 && *leftmost_ptr == deleted_child_page) {
         if (ph->cell_count > 0) {
-            uint16_t first_offset = *slot_ptr(parent, 0);
-            InternalEntry* first_entry = reinterpret_cast<InternalEntry*>(parent.data + first_offset);
+            uint16_t first_offset = *slot_ptr(*parent, 0);
+            InternalEntry* first_entry = reinterpret_cast<InternalEntry*>(parent->data + first_offset);
             *leftmost_ptr = first_entry->child_page;
-            remove_slot(parent, 0);
+            remove_slot(*parent, 0);
         } else {
             *leftmost_ptr = 0;
         }
-        th.dm.write_page(parent_id, parent.data);
+        th.bpm->unpin_page(parent_id, true);
         return;
     }
-    
-    int16_t idx = find_internal_entry_index(parent, key_to_remove);
+
+    int16_t idx = find_internal_entry_index(*parent, key_to_remove);
     if (idx >= 0) {
-        remove_slot(parent, static_cast<uint16_t>(idx));
-        th.dm.write_page(parent_id, parent.data);
+        remove_slot(*parent, static_cast<uint16_t>(idx));
+        th.bpm->unpin_page(parent_id, true);
+    } else {
+        th.bpm->unpin_page(parent_id, false);
     }
 }
 
@@ -339,18 +386,23 @@ static bool can_merge_pages(Page& left_page, Page& right_page) {
 }
 
 static void update_leaf_links_on_free(TableHandle& th, uint32_t freed_page_id, Page& freed_page) {
+    if (!th.bpm) {
+        return;
+    }
     PageHeader* ph = get_header(freed_page);
     if (ph->prev_page_id != 0) {
-        Page prev_page;
-        th.dm.read_page(ph->prev_page_id, prev_page.data);
-        get_header(prev_page)->next_page_id = ph->next_page_id;
-        th.dm.write_page(ph->prev_page_id, prev_page.data);
+        Page* prev_page = th.bpm->fetch_page(ph->prev_page_id);
+        if (prev_page) {
+            get_header(*prev_page)->next_page_id = ph->next_page_id;
+            th.bpm->unpin_page(ph->prev_page_id, true);
+        }
     }
     if (ph->next_page_id != 0) {
-        Page next_page;
-        th.dm.read_page(ph->next_page_id, next_page.data);
-        get_header(next_page)->prev_page_id = ph->prev_page_id;
-        th.dm.write_page(ph->next_page_id, next_page.data);
+        Page* next_page = th.bpm->fetch_page(ph->next_page_id);
+        if (next_page) {
+            get_header(*next_page)->prev_page_id = ph->prev_page_id;
+            th.bpm->unpin_page(ph->next_page_id, true);
+        }
     }
 }
 
@@ -394,13 +446,14 @@ static void merge_leaf_pages(TableHandle& th, uint32_t left_page_id, Page& left_
     left_ph->parent_page_id = parent_id;
     left_ph->prev_page_id = saved_prev;
     left_ph->next_page_id = right_next;
-    if (right_next != 0) {
-        Page next_page;
-        th.dm.read_page(right_next, next_page.data);
-        get_header(next_page)->prev_page_id = left_page_id;
-        th.dm.write_page(right_next, next_page.data);
+    if (right_next != 0 && th.bpm) {
+        Page* next_page = th.bpm->fetch_page(right_next);
+        if (next_page) {
+            get_header(*next_page)->prev_page_id = left_page_id;
+            th.bpm->unpin_page(right_next, true);
+        }
     }
-    
+
     // Write all records back
     for (size_t i = 0; i < all_records.size(); i++) {
         uint16_t new_offset = write_raw_record(left_page, all_records[i].data.data(), 
@@ -409,7 +462,13 @@ static void merge_leaf_pages(TableHandle& th, uint32_t left_page_id, Page& left_
         insert_slot(left_page, left_ph->cell_count, new_offset);
     }
     
-    th.dm.write_page(left_page_id, left_page.data);
+    if (th.bpm) {
+        Page* left_bp = th.bpm->fetch_page(left_page_id);
+        if (left_bp) {
+            std::memcpy(left_bp->data, left_page.data, PAGE_SIZE);
+            th.bpm->unpin_page(left_page_id, true);
+        }
+    }
     free_page(th, right_page_id);
 }
 
@@ -430,87 +489,112 @@ bool btree_delete(TableHandle& th, const Key& key) {
         return false;
     }
     
-    bool deleted = page_delete(leaf_page, key.data(), key.size());
-    if (!deleted) {
+    if (!th.bpm) {
         return false;
     }
-    
-    th.dm.write_page(leaf_page_id, leaf_page.data);
-    
-    th.dm.read_page(leaf_page_id, leaf_page.data);
+    Page* leaf_bp = th.bpm->fetch_page(leaf_page_id);
+    if (!leaf_bp) {
+        return false;
+    }
+    bool deleted = page_delete(*leaf_bp, key.data(), key.size());
+    if (!deleted) {
+        th.bpm->unpin_page(leaf_page_id, false);
+        return false;
+    }
+    th.bpm->unpin_page(leaf_page_id, true);
+
+    leaf_bp = th.bpm->fetch_page(leaf_page_id);
+    if (!leaf_bp) {
+        return false;
+    }
+    std::memcpy(leaf_page.data, leaf_bp->data, PAGE_SIZE);
     PageHeader* ph = get_header(leaf_page);
-    
+    th.bpm->unpin_page(leaf_page_id, false);
+
     if (ph->parent_page_id == 0) {
         if (ph->cell_count == 0) {
             th.root_page = 0;
-            Page meta;
-            th.dm.read_page(0, meta.data);
-            get_header(meta)->root_page = 0;
-            th.dm.write_page(0, meta.data);
+            Page* meta = th.bpm->fetch_page(0);
+            if (meta) {
+                get_header(*meta)->root_page = 0;
+                th.bpm->unpin_page(0, true);
+            }
             update_leaf_links_on_free(th, leaf_page_id, leaf_page);
             free_page(th, leaf_page_id);
         }
         return true;
     }
-    
+
     if (is_page_underutilized(leaf_page)) {
         SiblingInfo siblings = find_leaf_siblings(th, leaf_page_id, leaf_page);
         uint32_t parent_id = ph->parent_page_id;
-        
-        // Prefer merging with left sibling (simpler - removes current page's separator)
+
         if (siblings.left_sibling != 0) {
-            Page left_sibling;
-            th.dm.read_page(siblings.left_sibling, left_sibling.data);
-            
-            if (can_merge_pages(left_sibling, leaf_page)) {
-                merge_leaf_pages(th, siblings.left_sibling, left_sibling, leaf_page_id, leaf_page);
+            Page* left_sibling = th.bpm->fetch_page(siblings.left_sibling);
+            if (left_sibling && can_merge_pages(*left_sibling, leaf_page)) {
+                merge_leaf_pages(th, siblings.left_sibling, *left_sibling, leaf_page_id, leaf_page);
+                th.bpm->unpin_page(siblings.left_sibling, false);
                 remove_from_internal(th, parent_id, siblings.separator_key, leaf_page_id);
                 return true;
             }
-        } else if (siblings.right_sibling != 0) {
-            Page right_sibling;
-            th.dm.read_page(siblings.right_sibling, right_sibling.data);
-            
-            if (can_merge_pages(leaf_page, right_sibling)) {
-                merge_leaf_pages(th, leaf_page_id, leaf_page, siblings.right_sibling, right_sibling);
-                // Use right_separator_key since we're removing the right sibling
+            if (left_sibling) {
+                th.bpm->unpin_page(siblings.left_sibling, false);
+            }
+        }
+        if (siblings.right_sibling != 0) {
+            Page* right_sibling = th.bpm->fetch_page(siblings.right_sibling);
+            if (right_sibling && can_merge_pages(leaf_page, *right_sibling)) {
+                merge_leaf_pages(th, leaf_page_id, leaf_page, siblings.right_sibling, *right_sibling);
+                th.bpm->unpin_page(siblings.right_sibling, false);
                 remove_from_internal(th, parent_id, siblings.right_separator_key, siblings.right_sibling);
-                th.dm.read_page(leaf_page_id, leaf_page.data);
-                ph = get_header(leaf_page);
+                leaf_bp = th.bpm->fetch_page(leaf_page_id);
+                if (leaf_bp) {
+                    std::memcpy(leaf_page.data, leaf_bp->data, PAGE_SIZE);
+                    th.bpm->unpin_page(leaf_page_id, false);
+                    ph = get_header(leaf_page);
+                }
+            } else if (right_sibling) {
+                th.bpm->unpin_page(siblings.right_sibling, false);
             }
         }
     }
-    
+
     if (ph->cell_count == 0) {
         SiblingInfo siblings = find_leaf_siblings(th, leaf_page_id, leaf_page);
         uint32_t parent_id = ph->parent_page_id;
-        
+
         if (siblings.is_leftmost) {
             if (siblings.right_sibling != 0) {
-                Page right_sibling;
-                th.dm.read_page(siblings.right_sibling, right_sibling.data);
-                merge_leaf_pages(th, leaf_page_id, leaf_page, siblings.right_sibling, right_sibling);
-                // For leftmost, right_separator_key is the key pointing to right sibling
+                Page* right_sibling = th.bpm->fetch_page(siblings.right_sibling);
+                if (right_sibling) {
+                    th.bpm->unpin_page(siblings.right_sibling, false);
+                    merge_leaf_pages(th, leaf_page_id, leaf_page, siblings.right_sibling, *right_sibling);
+                }
                 remove_from_internal(th, parent_id, siblings.right_separator_key, siblings.right_sibling);
             } else {
-                Page parent;
-                th.dm.read_page(parent_id, parent.data);
-                PageHeader* parent_ph = get_header(parent);
-                uint32_t* leftmost_ptr = reinterpret_cast<uint32_t*>(parent_ph->reserved);
-                *leftmost_ptr = 0;
-                th.dm.write_page(parent_id, parent.data);
+                Page* parent = th.bpm->fetch_page(parent_id);
+                if (parent) {
+                    PageHeader* parent_ph = get_header(*parent);
+                    uint32_t* leftmost_ptr = reinterpret_cast<uint32_t*>(parent_ph->reserved);
+                    *leftmost_ptr = 0;
+                    th.bpm->unpin_page(parent_id, true);
+                }
                 update_leaf_links_on_free(th, leaf_page_id, leaf_page);
                 free_page(th, leaf_page_id);
             }
         } else if (siblings.left_sibling != 0) {
-            Page left_sibling;
-            th.dm.read_page(siblings.left_sibling, left_sibling.data);
-            merge_leaf_pages(th, siblings.left_sibling, left_sibling, leaf_page_id, leaf_page);
+            Page* left_sibling = th.bpm->fetch_page(siblings.left_sibling);
+            if (left_sibling) {
+                th.bpm->unpin_page(siblings.left_sibling, false);
+                merge_leaf_pages(th, siblings.left_sibling, *left_sibling, leaf_page_id, leaf_page);
+            }
             remove_from_internal(th, parent_id, siblings.separator_key, leaf_page_id);
         } else if (siblings.right_sibling != 0) {
-            Page right_sibling;
-            th.dm.read_page(siblings.right_sibling, right_sibling.data);
-            merge_leaf_pages(th, leaf_page_id, leaf_page, siblings.right_sibling, right_sibling);
+            Page* right_sibling = th.bpm->fetch_page(siblings.right_sibling);
+            if (right_sibling) {
+                th.bpm->unpin_page(siblings.right_sibling, false);
+                merge_leaf_pages(th, leaf_page_id, leaf_page, siblings.right_sibling, *right_sibling);
+            }
             remove_from_internal(th, parent_id, siblings.right_separator_key, siblings.right_sibling);
         } else {
             update_leaf_links_on_free(th, leaf_page_id, leaf_page);

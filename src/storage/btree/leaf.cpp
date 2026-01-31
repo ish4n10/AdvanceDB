@@ -2,28 +2,38 @@
 #include "storage/page.hpp"
 #include "storage/btree.hpp"
 #include "storage/table_handle.hpp"
+#include "storage/buffer_pool.hpp"
 #include "storage/record.hpp"
 #include <cassert>
 #include <vector>
 #include <cstring>
 
 uint32_t find_leaf_page(TableHandle& th, const Key& key, Page& out_page) {
+    if (!th.bpm) {
+        return UINT32_MAX;
+    }
     uint32_t page_id = th.root_page;
     int depth = 0;
-    
-    while(1) {
-        th.dm.read_page(page_id, out_page.data);
-        auto* ph = get_header(out_page);
-        
+
+    while (true) {
+        Page* page = th.bpm->fetch_page(page_id);
+        if (!page) {
+            return UINT32_MAX;
+        }
+        auto* ph = get_header(*page);
+
         if (ph->page_level == PageLevel::LEAF) {
+            std::memcpy(out_page.data, page->data, PAGE_SIZE);
+            th.bpm->unpin_page(page_id, false);
             return page_id;
         }
-        
-        uint32_t next_page_id = internal_find_child(out_page, key);
+
+        uint32_t next_page_id = internal_find_child(*page, key);
+        th.bpm->unpin_page(page_id, false);
         if (next_page_id == 0 || next_page_id >= 1000000) {
             return UINT32_MAX;
         }
-        
+
         page_id = next_page_id;
         depth++;
         if (depth > 100) {
@@ -33,25 +43,33 @@ uint32_t find_leaf_page(TableHandle& th, const Key& key, Page& out_page) {
 }
 
 uint32_t find_leftmost_leaf_page(TableHandle& th, Page& out_page) {
-    if (th.root_page == 0) {
+    if (!th.bpm || th.root_page == 0) {
         return UINT32_MAX;
     }
     uint32_t page_id = th.root_page;
     int depth = 0;
     while (true) {
-        th.dm.read_page(page_id, out_page.data);
-        PageHeader* ph = get_header(out_page);
+        Page* page = th.bpm->fetch_page(page_id);
+        if (!page) {
+            return UINT32_MAX;
+        }
+        PageHeader* ph = get_header(*page);
         if (ph->page_level == PageLevel::LEAF) {
+            std::memcpy(out_page.data, page->data, PAGE_SIZE);
+            th.bpm->unpin_page(page_id, false);
             return page_id;
         }
         if (ph->page_level != PageLevel::INTERNAL) {
+            th.bpm->unpin_page(page_id, false);
             return UINT32_MAX;
         }
         uint32_t* leftmost_ptr = reinterpret_cast<uint32_t*>(ph->reserved);
-        page_id = *leftmost_ptr;
-        if (page_id == 0) {
+        uint32_t next_page_id = *leftmost_ptr;
+        th.bpm->unpin_page(page_id, false);
+        if (next_page_id == 0) {
             return UINT32_MAX;
         }
+        page_id = next_page_id;
         depth++;
         if (depth > 100) {
             return UINT32_MAX;
@@ -60,12 +78,20 @@ uint32_t find_leftmost_leaf_page(TableHandle& th, Page& out_page) {
 }
 
 bool btree_insert_leaf_no_split(TableHandle& th, uint32_t page_id, Page& page, const Key& key, const Value& value) {
-    uint16_t rec_size = record_size(key.size(), value.size());
-    if (!can_insert(page, rec_size)) {
+    if (!th.bpm) {
         return false;
     }
-    page_insert(page, key.data(), key.size(), value.data(), value.size());
-    th.dm.write_page(page_id, page.data);
+    Page* p = th.bpm->fetch_page(page_id);
+    if (!p) {
+        return false;
+    }
+    uint16_t rec_size = record_size(key.size(), value.size());
+    if (!can_insert(*p, rec_size)) {
+        th.bpm->unpin_page(page_id, false);
+        return false;
+    }
+    page_insert(*p, key.data(), key.size(), value.data(), value.size());
+    th.bpm->unpin_page(page_id, true);
     return true;
 }
 
@@ -175,15 +201,26 @@ SplitLeafResult split_leaf_page(TableHandle& th, Page& page) {
     ph->next_page_id = new_page_id;
     new_ph->prev_page_id = left_page_id;
     new_ph->next_page_id = old_next_page_id;
-    if (old_next_page_id != 0) {
-        Page old_next_page;
-        th.dm.read_page(old_next_page_id, old_next_page.data);
-        get_header(old_next_page)->prev_page_id = new_page_id;
-        th.dm.write_page(old_next_page_id, old_next_page.data);
+    if (old_next_page_id != 0 && th.bpm) {
+        Page* old_next = th.bpm->fetch_page(old_next_page_id);
+        if (old_next) {
+            get_header(*old_next)->prev_page_id = new_page_id;
+            th.bpm->unpin_page(old_next_page_id, true);
+        }
     }
 
-    th.dm.write_page(left_page_id, page.data);
-    th.dm.write_page(new_page_id, new_page.data);
+    if (th.bpm) {
+        Page* left_bp = th.bpm->fetch_page(left_page_id);
+        if (left_bp) {
+            std::memcpy(left_bp->data, page.data, PAGE_SIZE);
+            th.bpm->unpin_page(left_page_id, true);
+        }
+        Page* right_bp = th.bpm->new_page(new_page_id, PageType::DATA, PageLevel::LEAF);
+        if (right_bp) {
+            std::memcpy(right_bp->data, new_page.data, PAGE_SIZE);
+            th.bpm->unpin_page(new_page_id, true);
+        }
+    }
 
     return {
         new_page_id,

@@ -1,13 +1,17 @@
 #pragma once
 #include <string>
-#include "storage/disk_manager.hpp"
+#include <memory>
 #include <cstdint>
+#include "storage/disk_manager.hpp"
+
+class BufferPoolManager;
 
 struct TableHandle {
     std::string table_name;
     std::string file_path;
 
-    DiskManager dm;
+    DiskManager dm;  // Used only by BufferPoolManager; do not call directly.
+    std::unique_ptr<BufferPoolManager> bpm;
 
     uint32_t root_page;
 
@@ -17,6 +21,7 @@ struct TableHandle {
         : table_name(name),
           file_path("data/" + name + ".db"),
           dm(file_path),
+          bpm(nullptr),
           root_page(0)
     {}
 };

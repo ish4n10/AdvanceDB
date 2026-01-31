@@ -1,5 +1,6 @@
 #include "storage/interface/storage_engine.hpp"
 #include "storage/table_handle.hpp"
+#include "storage/buffer_pool.hpp"
 #include "storage/btree.hpp"
 #include <cstring>
 #include <algorithm>
@@ -40,7 +41,9 @@ void StorageEngine::close_table(TableHandle* handle) {
     
     for (auto it = open_tables_.begin(); it != open_tables_.end(); ++it) {
         if (it->second.get() == handle) {
-            handle->dm.flush();
+            if (handle->bpm) {
+                handle->bpm->flush_all();
+            }
             open_tables_.erase(it);
             return;
         }
@@ -159,8 +162,8 @@ void StorageEngine::range_scan(TableHandle* handle, const std::vector<uint8_t>& 
 
 void StorageEngine::flush_all() {
     for (auto& [name, handle] : open_tables_) {
-        if (handle) {
-            handle->dm.flush();
+        if (handle && handle->bpm) {
+            handle->bpm->flush_all();
         }
     }
 }

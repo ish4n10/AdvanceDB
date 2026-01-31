@@ -2,6 +2,7 @@
 #include "storage/page.hpp"
 #include "storage/btree.hpp"
 #include "storage/table_handle.hpp"
+#include "storage/buffer_pool.hpp"
 #include "storage/record.hpp"
 #include <cstring>
 
