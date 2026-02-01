@@ -1,4 +1,5 @@
 #include "storage/table_handle.hpp"
+#include "storage/buffer_pool.hpp"
 #include "storage/page.hpp"
 #include <sys/stat.h>
 #include <stdexcept>
@@ -17,14 +18,16 @@ bool open_table(const std::string &name, TableHandle &th) {
     }
 
     try {
-        // TODO FIX 
         th.dm = DiskManager(th.file_path);
+        th.bpm = std::make_unique<BufferPoolManager>(th.dm);
 
-        Page meta;
-        th.dm.read_page(0, meta.data);
-
-        PageHeader *ph = get_header(meta);
+        Page* meta = th.bpm->fetch_page(0);
+        if (!meta) {
+            return false;
+        }
+        PageHeader* ph = get_header(*meta);
         th.root_page = ph->root_page;
+        th.bpm->unpin_page(0, false);
         return true;
     }
     catch (const std::exception &) {
@@ -76,55 +79,54 @@ bool create_table(const std::string &name) {
     }
 }
 
-// this one reserves a page id 
-uint32_t allocate_page(TableHandle &th) {
-    Page bitmap;
-    th.dm.read_page(1, bitmap.data);
+uint32_t allocate_page(TableHandle& th) {
+    if (!th.bpm) {
+        return INVALID_PAGE_ID;
+    }
+    Page* bitmap = th.bpm->fetch_page(1);
+    if (!bitmap) {
+        return INVALID_PAGE_ID;
+    }
 
-    uint8_t *bm = bitmap.data + sizeof(PageHeader);
+    uint8_t* bm = bitmap->data + sizeof(PageHeader);
     uint32_t bitmap_size = PAGE_SIZE - sizeof(PageHeader);
 
-    // Scan bitmap byte by byte, bit by bit
     for (uint32_t byte_idx = 0; byte_idx < bitmap_size; byte_idx++) {
         uint8_t byte = bm[byte_idx];
-
-        // Check each bit in the byte
         for (uint8_t bit_idx = 0; bit_idx < 8; bit_idx++) {
             uint32_t page_id = byte_idx * 8 + bit_idx;
-
-            // Skip pages 0, 1, 2 (meta, bitmap, root)
             if (page_id < 3) {
                 continue;
             }
-
-            // Check if bit is free (0 = free, 1 = allocated)
             if ((byte & (1 << bit_idx)) == 0) {
-                // Mark as allocated
                 bm[byte_idx] |= (1 << bit_idx);
-                th.dm.write_page(1, reinterpret_cast<const void *>(bitmap.data));
-                th.dm.flush();
+                th.bpm->unpin_page(1, true);
+                th.bpm->flush_page(1);
                 return page_id;
             }
         }
     }
 
-    // No free page found
+    th.bpm->unpin_page(1, false);
     return INVALID_PAGE_ID;
 }
 
-void free_page(TableHandle &th, uint32_t page_id) {
-    Page bitmap;
-    th.dm.read_page(1, bitmap.data);
+void free_page(TableHandle& th, uint32_t page_id) {
+    if (!th.bpm) {
+        return;
+    }
+    Page* bitmap = th.bpm->fetch_page(1);
+    if (!bitmap) {
+        return;
+    }
 
-    uint8_t *bm = bitmap.data + sizeof(PageHeader);
-
-    uint32_t bitmap_size = PAGE_SIZE - sizeof(PageHeader);
+    uint8_t* bm = bitmap->data + sizeof(PageHeader);
     uint32_t byte_idx = page_id / 8;
     uint32_t bit_idx = page_id % 8;
     bm[byte_idx] &= ~(1 << bit_idx);
-    th.dm.write_page(1, reinterpret_cast<const void *>(bitmap.data));
-    th.dm.flush();
-    return;
+    th.bpm->unpin_page(1, true);
+    th.bpm->flush_page(1);
+    th.bpm->delete_page(page_id);
 }
 
 

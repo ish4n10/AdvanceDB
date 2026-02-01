@@ -58,6 +58,13 @@ add_executable(test_btree
     ${BTREE_SOURCES}
 )
 
+add_executable(test_storage_engine
+    tests/storage/storage_engine_test.cpp
+    ${STORAGE_SOURCES}
+    ${BTREE_SOURCES}
+    src/storage/interface/storage_engine.cpp
+)
+
 # Optional: Parser executable
 # add_executable(parser
 #     src/parser/main.cpp
@@ -78,9 +85,14 @@ set_target_properties(test_btree PROPERTIES
     RUNTIME_OUTPUT_DIRECTORY ${CMAKE_BINARY_DIR}/bin
 )
 
+set_target_properties(test_storage_engine PROPERTIES
+    RUNTIME_OUTPUT_DIRECTORY ${CMAKE_BINARY_DIR}/bin
+)
+
 if (WIN32)
     target_link_options(test_page_allocation PRIVATE -mconsole)
     target_link_options(test_btree PRIVATE -mconsole)
+    target_link_options(test_storage_engine PRIVATE -mconsole)
 endif()
 
 # set_target_properties(test_page_insert PROPERTIES
@@ -114,4 +126,11 @@ add_custom_target(run_btree_test
     DEPENDS test_btree
     WORKING_DIRECTORY ${CMAKE_BINARY_DIR}/bin
     COMMENT "Running B+ tree test"
+)
+
+add_custom_target(run_storage_engine_test
+    COMMAND test_storage_engine
+    DEPENDS test_storage_engine
+    WORKING_DIRECTORY ${CMAKE_BINARY_DIR}/bin
+    COMMENT "Running StorageEngine API test"
 )

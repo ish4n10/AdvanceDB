@@ -101,12 +101,12 @@ Page* validate_page_insert()
     dm.flush();
 
     Page page_from_disk1;
-    dm.read_page(0, reinterpret_cast<char*>(page_from_disk1.data));
+    dm.read_page(0, page_from_disk1.data);
     std::cout << "After first read from disk:\n";
     debug_print_slot(page_from_disk1);
 
     Page page_from_disk2;
-    dm.read_page(0, reinterpret_cast<char*>(page_from_disk2.data));
+    dm.read_page(0, page_from_disk2.data);
     std::cout << "After second read from disk:\n";
     debug_print_slot(page_from_disk2);
 

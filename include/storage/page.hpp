@@ -16,14 +16,12 @@ enum class PageLevel : uint16_t {
     INTERNAL = 2
 };
 
-// ensuring single byte of alignment for each field in the struct
 #pragma pack(push, 1)
 struct PageHeader {
     uint32_t page_id;
     PageType page_type;
     PageLevel page_level;
 
-    // might need to take a look at struct again
     uint32_t root_page;
     uint8_t reserved[4];
     uint16_t flags;
@@ -32,7 +30,10 @@ struct PageHeader {
     uint16_t free_end;
 
     uint32_t parent_page_id;
-    uint32_t lsn; 
+    uint32_t lsn;
+
+    uint32_t prev_page_id;
+    uint32_t next_page_id;
 };
 #pragma pack(pop)
 
@@ -42,19 +43,14 @@ struct Page {
 };
 
 
-static_assert(sizeof(PageHeader) ==  32, "PageHeader size must be 32 bytes");
-// get header of a page 
+static_assert(sizeof(PageHeader) == 40, "PageHeader size must be 40 bytes");
+
 inline PageHeader* get_header(Page& page);
-
-// Page functionalities
 void init_page(Page& page, uint32_t page_id, PageType page_type, PageLevel page_level);
-
-// slot functionalities
 uint16_t* slot_ptr(Page& page, uint16_t index);
 void insert_slot(Page& page, uint16_t index, uint16_t record_offset);
 void remove_slot(Page& page, uint16_t index);
 
-// inline definition to avoid ODR/link warnings
 inline PageHeader* get_header(Page& page) {
     return reinterpret_cast<PageHeader*>(page.data);
 }
