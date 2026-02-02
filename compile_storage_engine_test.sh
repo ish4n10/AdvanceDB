@@ -8,6 +8,7 @@ g++ -std=c++17 -I./include \
     src/storage/record.cpp \
     src/storage/table.cpp \
     src/storage/slot_helpers.cpp \
+    src/storage/buffer_pool.cpp \
     src/storage/btree/btree.cpp \
     src/storage/btree/leaf.cpp \
     src/storage/btree/internal.cpp \
