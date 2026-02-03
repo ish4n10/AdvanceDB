@@ -14,9 +14,12 @@ enum class TokenType {
     OrderBy, GroupBy, By,
     Create, Database, Table, In,
     Primary, Key, Unique, Not, Null,
+    Auto, Increment,
     Insert, Into, Values,
     Update, Set,
     Delete,
+    Use,
+    Exit,
 
     Plus, Minus, Star, Slash,
     Eq, Lt, Gt, LtEq, GtEq,
@@ -53,30 +56,52 @@ public:
             size_t start = pos;
             while (pos < input.size() && (isalnum(input[pos]) || input[pos] == '_')) pos++;
             std::string word = input.substr(start, pos - start);
+            
+            // Convert to uppercase for case-insensitive keyword matching
+            std::string word_upper = word;
+            for (char& ch : word_upper) {
+                if (ch >= 'a' && ch <= 'z') ch = ch - 'a' + 'A';
+            }
 
-            if (word == "SELECT") return {TokenType::Select, word};
-            if (word == "FROM")   return {TokenType::From, word};
-            if (word == "WHERE")  return {TokenType::Where, word};
-            if (word == "AND")    return {TokenType::And, word};
-            if (word == "OR")     return {TokenType::Or, word};
-            if (word == "ORDER")  return {TokenType::OrderBy, word};
-            if (word == "GROUP")  return {TokenType::GroupBy, word};
-            if (word == "BY")     return {TokenType::By, word};
-            if (word == "CREATE") return {TokenType::Create, word};
-            if (word == "DATABASE") return {TokenType::Database, word};
-            if (word == "TABLE")  return {TokenType::Table, word};
-            if (word == "IN")     return {TokenType::In, word};
-            if (word == "PRIMARY") return {TokenType::Primary, word};
-            if (word == "KEY")    return {TokenType::Key, word};
-            if (word == "UNIQUE") return {TokenType::Unique, word};
-            if (word == "NOT")    return {TokenType::Not, word};
-            if (word == "NULL")   return {TokenType::Null, word};
-            if (word == "INSERT") return {TokenType::Insert, word};
-            if (word == "INTO")   return {TokenType::Into, word};
-            if (word == "VALUES") return {TokenType::Values, word};
-            if (word == "UPDATE") return {TokenType::Update, word};
-            if (word == "SET")    return {TokenType::Set, word};
-            if (word == "DELETE") return {TokenType::Delete, word};
+            // Handle AUTO_INCREMENT as a compound keyword (split into AUTO and INCREMENT)
+            if (word_upper == "AUTO_INCREMENT") {
+                // Adjust position to point after "AUTO_" so next call returns "INCREMENT"
+                pos = start + 5; // "AUTO_" is 5 characters
+                return {TokenType::Auto, "AUTO"};
+            }
+
+            if (word_upper == "SELECT") return {TokenType::Select, word};
+            if (word_upper == "FROM")   return {TokenType::From, word};
+            if (word_upper == "WHERE")  return {TokenType::Where, word};
+            if (word_upper == "AND")    return {TokenType::And, word};
+            if (word_upper == "OR")     return {TokenType::Or, word};
+            if (word_upper == "ORDER")  return {TokenType::OrderBy, word};
+            if (word_upper == "GROUP")  return {TokenType::GroupBy, word};
+            if (word_upper == "BY")     return {TokenType::By, word};
+            if (word_upper == "CREATE") return {TokenType::Create, word};
+            if (word_upper == "DATABASE") return {TokenType::Database, word};
+            if (word_upper == "TABLE")  return {TokenType::Table, word};
+            if (word_upper == "IN")     return {TokenType::In, word};
+            if (word_upper == "PRIMARY") return {TokenType::Primary, word};
+            if (word_upper == "KEY")    return {TokenType::Key, word};
+            if (word_upper == "UNIQUE") return {TokenType::Unique, word};
+            if (word_upper == "NOT")    return {TokenType::Not, word};
+            if (word_upper == "NULL")   return {TokenType::Null, word};
+            if (word_upper == "AUTO") {
+                return {TokenType::Auto, word};
+            }
+            if (word_upper == "INCREMENT") {
+                return {TokenType::Increment, word};
+            }
+            if (word_upper == "INSERT") return {TokenType::Insert, word};
+            if (word_upper == "INTO")   return {TokenType::Into, word};
+            if (word_upper == "VALUES") return {TokenType::Values, word};
+            if (word_upper == "UPDATE") return {TokenType::Update, word};
+            if (word_upper == "SET")    return {TokenType::Set, word};
+            if (word_upper == "DELETE") return {TokenType::Delete, word};
+            if (word_upper == "USE")    return {TokenType::Use, word};
+            if (word_upper == "EXIT")   return {TokenType::Exit, word};
+            if (word_upper == "QUIT")   return {TokenType::Exit, word};
 
             return {TokenType::Identifier, word};
         }
@@ -264,6 +289,7 @@ public:
 };
 
 #include "statements/statement.h"
+#include "statements/use.h"
 
 // Main parse_statement function - returns Statement abstraction
 Statement parse_statement(Parser& parser) {
@@ -286,6 +312,10 @@ Statement parse_statement(Parser& parser) {
     if (parser.current.type == TokenType::Delete) {
         DeleteStmt delete_stmt = parse_delete(parser);
         return Statement(delete_stmt);
+    }
+    if (parser.current.type == TokenType::Use) {
+        UseStmt use_stmt = parse_use(parser);
+        return Statement(use_stmt);
     }
     throw std::runtime_error("Unsupported statement type");
 }

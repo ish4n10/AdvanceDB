@@ -7,6 +7,7 @@
 #include "statements/insert.h"
 #include "statements/update.h"
 #include "statements/delete.h"
+#include "statements/use.h"
 
 SelectStmt parse_select(Parser& parser) {
     SelectStmt stmt;
@@ -118,7 +119,8 @@ ColumnDef parse_column_def(Parser& parser) {
     // Parse optional constraints (can appear in any order)
     while (parser.current.type == TokenType::Primary || 
            parser.current.type == TokenType::Unique || 
-           parser.current.type == TokenType::Not) {
+           parser.current.type == TokenType::Not ||
+           parser.current.type == TokenType::Auto) {
         
         if (parser.current.type == TokenType::Primary) {
             parser.eat(TokenType::Primary);
@@ -131,6 +133,10 @@ ColumnDef parse_column_def(Parser& parser) {
             parser.eat(TokenType::Not);
             parser.eat(TokenType::Null);
             col.is_not_null = true;
+        } else if (parser.current.type == TokenType::Auto) {
+            parser.eat(TokenType::Auto);
+            parser.eat(TokenType::Increment);
+            col.is_auto_increment = true;
         }
     }
     
@@ -341,6 +347,19 @@ DeleteStmt parse_delete(Parser& parser) {
         stmt.where = parser.parse_expr();
     }
     
+    parser.eat(TokenType::Semicolon);
+    return stmt;
+}
+
+// Parse USE database_name;
+UseStmt parse_use(Parser& parser) {
+    UseStmt stmt;
+    parser.eat(TokenType::Use);
+    if (parser.current.type != TokenType::Identifier) {
+        throw std::runtime_error("Expected database name after USE");
+    }
+    stmt.database_name = parser.current.text;
+    parser.eat(TokenType::Identifier);
     parser.eat(TokenType::Semicolon);
     return stmt;
 }
