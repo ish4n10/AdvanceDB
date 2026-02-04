@@ -65,6 +65,87 @@ add_executable(test_storage_engine
     src/storage/interface/storage_engine.cpp
 )
 
+# Storage_new sources (OLTP components)
+set(STORAGE_NEW_SOURCES
+    src/storage_new/catalog_manager.cpp
+    src/storage_new/schema_serializer.cpp
+    src/storage_new/storage_manager.cpp
+    src/storage_new/storage.cpp
+    src/storage_new/db_manager.cpp
+    src/storage_new/transaction_manager.cpp
+)
+
+# Network sources
+set(NETWORK_SOURCES
+    src/network/tcp_client.cpp
+    src/network/tcp_server.cpp
+    src/network/select_server.cpp
+)
+
+# Analyser sources
+set(ANALYSER_SOURCES
+    src/analyser/analyser.cpp
+)
+
+# Orchestrator sources
+set(ORCHESTRATOR_SOURCES
+    src/orchestrator/orchestrator.cpp
+)
+
+# Main executable
+add_executable(advance_db
+    src/main.cpp
+    src/parser/parser.cpp
+    src/parser/statements.cpp
+    ${STORAGE_NEW_SOURCES}
+    ${ANALYSER_SOURCES}
+    ${ORCHESTRATOR_SOURCES}
+)
+
+set_target_properties(advance_db PROPERTIES
+    RUNTIME_OUTPUT_DIRECTORY ${CMAKE_BINARY_DIR}/bin
+)
+
+if (WIN32)
+    target_link_options(advance_db PRIVATE -mconsole)
+    target_link_libraries(advance_db ws2_32)
+endif()
+
+# Client executable
+add_executable(advance_db_client
+    src/client/main.cpp
+    ${NETWORK_SOURCES}
+)
+
+set_target_properties(advance_db_client PROPERTIES
+    RUNTIME_OUTPUT_DIRECTORY ${CMAKE_BINARY_DIR}/bin
+)
+
+if (WIN32)
+    target_link_options(advance_db_client PRIVATE -mconsole)
+    target_link_libraries(advance_db_client ws2_32)
+endif()
+
+# Server executable
+add_executable(advance_db_server
+    src/server/main.cpp
+    src/parser/parser.cpp
+    src/parser/statements.cpp
+    ${STORAGE_NEW_SOURCES}
+    ${NETWORK_SOURCES}
+    ${ANALYSER_SOURCES}
+    ${ORCHESTRATOR_SOURCES}
+)
+
+set_target_properties(advance_db_server PROPERTIES
+    RUNTIME_OUTPUT_DIRECTORY ${CMAKE_BINARY_DIR}/bin
+)
+
+if (WIN32)
+    target_link_options(advance_db_server PRIVATE -mconsole)
+    target_link_libraries(advance_db_server ws2_32)
+endif()
+
 # Optional: Parser executable
 # add_executable(parser
 #     src/parser/main.cpp
