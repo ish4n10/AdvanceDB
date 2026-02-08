@@ -12,7 +12,7 @@ namespace Relational {
         const TableSchema& schema;
     public:
         RowCodec(const TableSchema& schema);
-        ~RowCodec();
+        ~RowCodec() = default;
         std::vector<uint8_t> encode(const Tuple& tuple) const;
         Tuple decode(const std::vector<uint8_t>& data) const;
     };
