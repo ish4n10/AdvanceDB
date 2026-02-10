@@ -1,15 +1,16 @@
 #include "storage/relational/catalog.hpp"
 
-using namespace Relational;
+namespace Relational {
+
+Catalog::Catalog() = default;
+
+Catalog::~Catalog() = default;
 
 bool Catalog::register_table(const std::string& table_name, const TableSchema& schema) {
-    
-    auto pair = std::make_pair(table_name, schema);
-
     if (tables.find(table_name) != tables.end()) {
         return false;
     }
-    tables.insert(pair);
+    tables.insert(std::make_pair(table_name, schema));
     return true;
 }
 
@@ -23,10 +24,7 @@ std::optional<const TableSchema*> Catalog::get_schema(const std::string& table_n
 }
 
 bool Catalog::has_table(const std::string& table_name) const {
-    if (tables.find(table_name) != tables.end()) {
-        return false;
-    }
-    return true;
+    return tables.find(table_name) != tables.end();
 }
 
 bool Catalog::drop_table(const std::string& table_name) {
@@ -37,5 +35,7 @@ bool Catalog::drop_table(const std::string& table_name) {
 
     tables.erase(found_pair);
     return true;
+}
+
 }
 

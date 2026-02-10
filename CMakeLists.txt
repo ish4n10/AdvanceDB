@@ -61,8 +61,19 @@ add_executable(test_btree
 add_executable(test_storage_engine
     tests/storage/storage_engine_test.cpp
     ${STORAGE_SOURCES}
+    src/storage/buffer_pool.cpp
     ${BTREE_SOURCES}
     src/storage/interface/storage_engine.cpp
+)
+
+add_executable(test_relational_engine
+    tests/storage/relational_engine_test.cpp
+    ${STORAGE_SOURCES}
+    src/storage/buffer_pool.cpp
+    ${BTREE_SOURCES}
+    src/storage/interface/storage_engine.cpp
+    src/storage/relational/catalog.cpp
+    src/storage/relational/row_codec.cpp
 )
 
 # Storage_new sources (OLTP components)
@@ -170,10 +181,15 @@ set_target_properties(test_storage_engine PROPERTIES
     RUNTIME_OUTPUT_DIRECTORY ${CMAKE_BINARY_DIR}/bin
 )
 
+set_target_properties(test_relational_engine PROPERTIES
+    RUNTIME_OUTPUT_DIRECTORY ${CMAKE_BINARY_DIR}/bin
+)
+
 if (WIN32)
     target_link_options(test_page_allocation PRIVATE -mconsole)
     target_link_options(test_btree PRIVATE -mconsole)
     target_link_options(test_storage_engine PRIVATE -mconsole)
+    target_link_options(test_relational_engine PRIVATE -mconsole)
 endif()
 
 # set_target_properties(test_page_insert PROPERTIES
@@ -214,4 +230,11 @@ add_custom_target(run_storage_engine_test
     DEPENDS test_storage_engine
     WORKING_DIRECTORY ${CMAKE_BINARY_DIR}/bin
     COMMENT "Running StorageEngine API test"
+)
+
+add_custom_target(run_relational_engine_test
+    COMMAND test_relational_engine
+    DEPENDS test_relational_engine
+    WORKING_DIRECTORY ${CMAKE_SOURCE_DIR}
+    COMMENT "Running Relational Storage Engine test"
 )

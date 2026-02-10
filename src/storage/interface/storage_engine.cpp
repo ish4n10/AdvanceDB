@@ -2,6 +2,8 @@
 #include "storage/table_handle.hpp"
 #include "storage/buffer_pool.hpp"
 #include "storage/btree.hpp"
+#include "storage/relational/catalog.hpp"
+#include "storage/relational/row_codec.hpp"
 #include <cstring>
 #include <algorithm>
 #include <cstdio>
@@ -20,12 +22,28 @@ bool StorageEngine::create_table(const std::string& table_name) {
     return ::create_table(table_name);
 }
 
+bool StorageEngine::create_table(const std::string& table_name, const Relational::TableSchema& schema) {
+    if (open_tables_.find(table_name) != open_tables_.end()) {
+        return false;
+    }
+    if (!::create_table(table_name)) {
+        return false;
+    }
+    if (!catalog_.register_table(table_name, schema)) {
+        return false;
+    }
+    return true;
+}
+
 bool StorageEngine::drop_table(const std::string& table_name) {
     auto it = open_tables_.find(table_name);
     if (it != open_tables_.end()) {
+        if (it->second && it->second->bpm) {
+            it->second->bpm->flush_all();
+        }
         open_tables_.erase(it);
     }
-    
+    catalog_.drop_table(table_name);
     std::string path = "data/" + table_name + ".db";
     return std::remove(path.c_str()) == 0;
 }
@@ -129,6 +147,22 @@ void btree_scan_wrapper(const Key& k, const Value& v, void* ctx) {
     std::vector<uint8_t> value_vec(v.data(), v.data() + v.size());
     scan_ctx->user_callback(key_vec, value_vec, scan_ctx->user_ctx);
 }
+
+struct RelationalScanContext {
+    const Relational::TableSchema* schema;
+    std::vector<Relational::Tuple>* rows;
+};
+
+void relational_scan_callback(const std::vector<uint8_t>& key, const std::vector<uint8_t>& value, void* ctx) {
+    (void)key;
+    RelationalScanContext* rctx = static_cast<RelationalScanContext*>(ctx);
+    if (rctx->schema == nullptr || rctx->rows == nullptr) return;
+    Relational::RowCodec codec(*rctx->schema);
+    Relational::Tuple row = codec.decode(value);
+    if (row.size() == rctx->schema->columns.size()) {
+        rctx->rows->push_back(std::move(row));
+    }
+}
 }
 
 void StorageEngine::scan_table(TableHandle* handle, ScanCallback callback, void* ctx) {
@@ -166,4 +200,53 @@ void StorageEngine::flush_all() {
             handle->bpm->flush_all();
         }
     }
+}
+
+bool StorageEngine::insert(const std::string& table_name, const Relational::Tuple& row) {
+    auto schema_opt = catalog_.get_schema(table_name);
+    if (!schema_opt.has_value() || schema_opt.value() == nullptr) {
+        return false;
+    }
+    const Relational::TableSchema* schema = schema_opt.value();
+    TableHandle* handle = get_or_open_table(table_name);
+    if (handle == nullptr) {
+        return false;
+    }
+    Relational::RowCodec codec(*schema);
+    std::vector<uint8_t> key_bytes = codec.encode_key(row);
+    std::vector<uint8_t> value_bytes = codec.encode_value(row);
+    if (key_bytes.empty() || value_bytes.empty()) {
+        return false;
+    }
+    return insert_record(handle, key_bytes, value_bytes);
+}
+
+std::vector<Relational::Tuple> StorageEngine::scan(const std::string& table_name) {
+    std::vector<Relational::Tuple> rows;
+    auto schema_opt = catalog_.get_schema(table_name);
+    if (!schema_opt.has_value() || schema_opt.value() == nullptr) {
+        return rows;
+    }
+    const Relational::TableSchema* schema = schema_opt.value();
+    TableHandle* handle = get_or_open_table(table_name);
+    if (handle == nullptr) {
+        return rows;
+    }
+    RelationalScanContext rctx;
+    rctx.schema = schema;
+    rctx.rows = &rows;
+    scan_table(handle, relational_scan_callback, &rctx);
+    return rows;
+}
+
+bool StorageEngine::has_table(const std::string& table_name) const {
+    return catalog_.has_table(table_name);
+}
+
+const Relational::TableSchema* StorageEngine::get_schema(const std::string& table_name) const {
+    auto opt = catalog_.get_schema(table_name);
+    if (!opt.has_value() || opt.value() == nullptr) {
+        return nullptr;
+    }
+    return opt.value();
 }

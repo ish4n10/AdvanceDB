@@ -5,8 +5,10 @@
 #include <vector>
 #include <memory>
 #include <unordered_map>
-
+#include "storage/relational/catalog.hpp"
+#include "storage/relational/row_codec.hpp"
 struct TableHandle;
+
 
 class StorageEngine {
 public:
@@ -17,6 +19,7 @@ public:
     StorageEngine& operator=(const StorageEngine&) = delete;
 
     bool create_table(const std::string& table_name);
+    bool create_table(const std::string& table_name, const Relational::TableSchema& schema);
     bool drop_table(const std::string& table_name);
     TableHandle* open_table(const std::string& table_name);
     void close_table(TableHandle* handle);
@@ -32,8 +35,13 @@ public:
 
     void flush_all();
 
+    bool insert(const std::string& table_name, const Relational::Tuple& row);
+    std::vector<Relational::Tuple> scan(const std::string& table_name);
+    bool has_table(const std::string& table_name) const;
+    const Relational::TableSchema* get_schema(const std::string& table_name) const;
+
 private:
     std::unordered_map<std::string, std::unique_ptr<TableHandle>> open_tables_;
-    
+    Relational::Catalog catalog_;
     TableHandle* get_or_open_table(const std::string& table_name);
 };
